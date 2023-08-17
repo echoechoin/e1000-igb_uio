@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <string.h>
-#include "e1000.h"
 #include "mem_alloc.h"
 
 #define PCI_PRI_STR_SIZE sizeof("XXXXXXXX:XX:XX.X")
@@ -124,6 +123,19 @@ enum IMS
     IM_SRPD = 1 << 16,   // Small Receive Packet Detection
 };
 
+// 接收状态
+enum RS
+{
+    RS_DD = 1 << 0,    // Descriptor done
+    RS_EOP = 1 << 1,   // End of packet
+    RS_VP = 1 << 3,    // Packet is 802.1q (matched VET);
+                       // indicates strip VLAN in 802.1q packet
+    RS_UDPCS = 1 << 4, // UDP checksum calculated on packet
+    RS_L4CS = 1 << 5,  // L4 (UDP or TCP) checksum calculated on packet
+    RS_IPCS = 1 << 6,  // Ipv4 checksum calculated on packet
+    RS_PIF = 1 << 7,   // Passed in-exact filter
+};
+
 #define E1000_READ_REG(hw, reg) \
     (*((volatile uint32_t *)((char *)(hw) + (reg))))
 
@@ -153,192 +165,26 @@ typedef struct tx_desc_t
 
 #define RX_DESC_NR 32
 
-struct eth_device {
+struct e1000_device {
     char name[PCI_PRI_STR_SIZE + 1];
-    int has_eeprom;
+
+    int eeprom;
     void *hw_addr;
+    
+    int uio_fd;
+    int config_fd;
+    
     uint8_t mac_addr[6];
 
     uint16_t rx_cur;
     uint16_t tx_cur;
 
     struct rx_desc_t *rx_desc;
-    struct tx_desc_t *tx_desc;
+    struct rx_desc_t *tx_desc;
+
 };
 
-struct eth_device *eth_device_get(const char *pci_id)
-{
-    char path[1024] = {0};
-    struct eth_device *dev = (struct eth_device *)malloc(sizeof(struct eth_device));
-    if (!dev)
-        return NULL;
-    snprintf(dev->name, PCI_PRI_STR_SIZE, "%s", pci_id);
-    snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/resource0", pci_id);
-    int fd = open(path, O_RDWR);
-    dev->hw_addr = mmap(NULL, 0x1ffff, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (dev->hw_addr == MAP_FAILED) {
-        free(dev);
-        return NULL;
-    }
-    return dev;
-}
-
-
-/**
- * @brief   检测是否有eeprom
- * 
- * @param pci_dev 
- */
-void e1000_eeprome_detect(struct eth_device *eth_dev)
-{
-    uint32_t *hw = (uint32_t *)eth_dev->hw_addr;
-    uint32_t eerd = E1000_READ_REG(hw, E1000_EERD);
-    eth_dev->has_eeprom = 0;
-    if (eerd & 0x10)
-        eth_dev->has_eeprom = 1;
-    printf("e1000 has_eeprom: %d\n", eth_dev->has_eeprom);
-    return;  
-}
-
-uint16_t e1000_eeprom_read(struct eth_device *eth_dev, uint8_t addr)
-{
-    uint32_t *hw = (uint32_t *)eth_dev->hw_addr;
-    uint32_t eerd;
-    if (eth_dev->has_eeprom) {
-        eerd = E1000_WRITE_REG(hw, E1000_EERD, addr << 8 | 1);
-        while(1) {
-            eerd = E1000_READ_REG(hw, E1000_EERD);
-            if (eerd & (1 << 4))
-                break;
-        }
-    } else {
-        // other way?
-    }
-    return eerd >> 16 & 0xFFFF;
-}
-
-void e1000_read_mac(struct eth_device *eth_dev)
-{
-    uint32_t *hw = (uint32_t *)eth_dev->hw_addr;
-    uint16_t val = 0;
-
-    if (eth_dev->has_eeprom == 0) {
-        return;
-    } else {
-        val = e1000_eeprom_read(eth_dev, 0);
-        eth_dev->mac_addr[0] = val & 0xFF;
-        eth_dev->mac_addr[1] = val >> 8;
-
-        val = e1000_eeprom_read(eth_dev, 1);
-        eth_dev->mac_addr[2] = val & 0xFF;
-        eth_dev->mac_addr[3] = val >> 8;
-
-        val = e1000_eeprom_read(eth_dev, 2);
-        eth_dev->mac_addr[4] = val & 0xFF;
-        eth_dev->mac_addr[5] = val >> 8;
-    }
-    return;
-}
-// 初始化组播表数组
-void e1000_init_multicast(struct eth_device *eth_dev)
-{
-    uint32_t *hw = (uint32_t *)eth_dev->hw_addr;
-    for (int i = E1000_MAT0; i < E1000_MAT1; i += 4)
-        E1000_WRITE_REG(hw, i, 0);
-}
-
-void e1000_intr_disable(struct eth_device *eth_dev)
-{
-    uint32_t *hw = (uint32_t *)eth_dev->hw_addr;
-    E1000_WRITE_REG(hw, E1000_IMC, 0);
-}
-
-void e1000_intr_init(struct eth_device *eth_dev)
-{
-    uint32_t flags = 0;
-    flags |= IM_RXT0 | IM_RXO | IM_RXDMT0 | IM_RXSEQ | IM_LSC;
-    E1000_WRITE_REG(eth_dev->hw_addr, E1000_IMS, flags);
-}
-
-int e1000_rx_desc_init(struct eth_device *eth_dev)
-{
-    struct page *p = NULL;
-    eth_dev->rx_cur = 0;
-
-    p = alloc_page();
-    if (!p) {
-        printf("alloc_page failed\n");
-        return -1;
-    }
-    eth_dev->rx_desc = (struct rx_desc_t *)p->phys_addr;
-    memset(p->addr, 0, RX_DESC_NR * sizeof(struct rx_desc_t));
-
-    // 接收描述符地址
-    E1000_WRITE_REG(eth_dev->hw_addr, E1000_RDBAL, (uint32_t)((uint64_t)eth_dev->rx_desc & 0xFFFFFFFF));
-    E1000_WRITE_REG(eth_dev->hw_addr, E1000_RDBAH, (uint32_t)((uint64_t)eth_dev->rx_desc >> 32));
-
-    // 接收描述符长度
-    E1000_WRITE_REG(eth_dev->hw_addr, E1000_RDLEN, RX_DESC_NR * sizeof(struct rx_desc_t));
-
-    // 接收描述符头尾索引
-    E1000_WRITE_REG(eth_dev->hw_addr, E1000_RDH, 0);
-    E1000_WRITE_REG(eth_dev->hw_addr, E1000_RDT, RX_DESC_NR - 1);
-
-    for (int i = 0; i < RX_DESC_NR; i++) {
-        p = alloc_page();
-        if (!p) {
-            printf("alloc_page failed\n");
-            return -1;
-        }
-        eth_dev->rx_desc[i].addr = (uint64_t)p->phys_addr;
-        eth_dev->rx_desc[i].length = 2048;
-        eth_dev->rx_desc[i].status = 0;
-    }
-
-    // 寄存器设置
-    uint32_t flags = 0;
-    flags |= RCTL_EN | RCTL_SBP | RCTL_UPE;
-    flags |= RCTL_MPE | RCTL_LBM_NONE | RTCL_RDMTS_HALF;
-    flags |= RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048;
-
-    E1000_WRITE_REG(eth_dev->hw_addr, E1000_RCTL, flags);
-    return 0;
-}
-
-void e1000_reset(struct eth_device *eth_dev)
-{
-    e1000_eeprome_detect(eth_dev);
-
-    e1000_read_mac(eth_dev);
-
-    e1000_init_multicast(eth_dev);
-
-    e1000_intr_disable(eth_dev);
-
-    e1000_rx_desc_init(eth_dev);
-
-    e1000_intr_init(eth_dev);
-}
-
-int e1000_init(struct eth_device *eth_dev)
-{
-    e1000_reset(eth_dev);
-    printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-           eth_dev->mac_addr[0], eth_dev->mac_addr[1],
-           eth_dev->mac_addr[2], eth_dev->mac_addr[3],
-           eth_dev->mac_addr[4], eth_dev->mac_addr[5]);
-
-    // 轮询接收描述符
-    while (1) {
-        for (int i = 0; i < RX_DESC_NR; i++) {
-            printf("rx_desc[%d].status: %d\n", i, eth_dev->rx_desc[i].status);
-        }
-    }
-    return 0;
-}
-
-
-
-
+int e1000_init(struct e1000_device *dev);
+struct e1000_device *e1000_device_get(const char *pci_id);
 
 #endif
