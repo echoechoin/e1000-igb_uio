@@ -24,12 +24,19 @@ insmod ./igb_uio.ko
 
 ## 编译和测试
 
+### 0. 编译
+
 ```bash
 make
-./e1000-test # 进入驱动程序
 ```
 
-新建一个终端，运行测试程序：
+### 1. 报文接收
+
+```bash
+./e1000-test -i <网卡二PCI ID> -m recv
+```
+
+然后新建一个终端，运行测试程序：
 
 ```bash
 ip link set <网卡3> up
@@ -40,6 +47,7 @@ tcpreply -i <网卡3> ./test/test.pcap
 
 ```
 ...
+
 receive desc:        18
 receive total:       371
 receive packet src:  00:50:56:c0:00:0a
@@ -52,6 +60,34 @@ receive desc:        20
 receive total:       373
 receive packet src:  00:50:56:c0:00:0a
                dest: 01:00:5e:7f:ff:fa
+
 ...
 ```
 
+### 2. 报文发送
+
+```bash
+./e1000-test -i <网卡二PCI ID> -m send
+```
+
+然后新建一个终端，监听网卡3上的数据包：
+
+```bash
+tcpdump -i <网卡3>
+```
+
+可以看到网卡三收到网卡二发送过来的报文：
+
+```
+...
+
+02:49:03.636248 ARP, Ethernet (len 6), IPv4 (len 4), Request who-has 1.2.3.4 tell 1.2.3.4, length 46
+02:49:04.637978 ARP, Ethernet (len 6), IPv4 (len 4), Request who-has 1.2.3.4 tell 1.2.3.4, length 46
+02:49:05.639219 ARP, Ethernet (len 6), IPv4 (len 4), Request who-has 1.2.3.4 tell 1.2.3.4, length 46
+
+...
+```
+
+### 3. 中断处理
+
+由于[VMWARE 环境下 82545EM 虚拟网卡不支持 msix、intx 中断](https://blog.csdn.net/Longyu_wlz/article/details/121443906)，暂时无法测试中断处理。
