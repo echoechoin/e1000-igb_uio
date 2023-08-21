@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include "mem_alloc.h"
 
-#define PAGE_TABLE_NR 1024
+#define PAGE_TABLE_NR 2048
 static struct page page_table[PAGE_TABLE_NR];
 
 static struct page *get_free_page() {
@@ -20,7 +20,6 @@ static struct page *get_free_page() {
     return NULL;
 }
 
-// 通过/proc/self/pagemap获取物理地址
 static void *get_phys_addr(void *virt_addr)
 {
     uint64_t page_frame_num;
@@ -54,7 +53,6 @@ static void *get_phys_addr(void *virt_addr)
 }
 
 struct page *alloc_page() {
-    // posix_memalign
     void *addr;
     int page_size = getpagesize();
     posix_memalign(&addr, page_size, page_size);
@@ -66,7 +64,6 @@ struct page *alloc_page() {
         free(p);
         return NULL;
     }
-    printf("alloc_page: virt_addr=%p, phys_addr=%p\n", addr, p->phys_addr);
     return p->addr;
 }
 

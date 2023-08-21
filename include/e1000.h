@@ -136,6 +136,30 @@ enum RS
     RS_PIF = 1 << 7,   // Passed in-exact filter
 };
 
+// 传输控制
+enum TCTL
+{
+    TCTL_EN = 1 << 1,      // Transmit Enable
+    TCTL_PSP = 1 << 3,     // Pad Short Packets
+    TCTL_CT = 4,           // Collision Threshold
+    TCTL_COLD = 12,        // Collision Distance
+    TCTL_SWXOFF = 1 << 22, // Software XOFF Transmission
+    TCTL_RTLC = 1 << 24,   // Re-transmit on Late Collision
+    TCTL_NRTU = 1 << 25,   // No Re-transmit on underrun
+};
+
+// 传输命令
+enum TCMD
+{
+    TCMD_EOP = 1 << 0,  // When set, indicates the last descriptor making up the packet. One or many descriptors can be used to form a packet
+    TCMD_IFCS = 1 << 1, // Insert FCS/CRC filed
+    TCMD_IC = 1 << 2,   // Insert Checksum
+    TCMD_RS = 1 << 3,   // Report Status 如果设置，将在传输完成后设置状态位
+    TCMD_RPS = 1 << 4,  // Report Packet Sent
+    TCMD_VLE = 1 << 6,  // VLAN Packet Enable
+    TCMD_IDE = 1 << 7,  // Interrupt Delay Enable
+};
+
 #define E1000_READ_REG(hw, reg) \
     (*((volatile uint32_t *)((char *)(hw) + (reg))))
 
@@ -158,33 +182,39 @@ typedef struct tx_desc_t
     uint16_t length;  // 包长度
     uint8_t cso;      // Checksum Offset
     uint8_t cmd;      // 命令
-    uint8_t status;   // 状态
+    uint8_t status;   // 状态 
     uint8_t css;      // Checksum Start Field
     uint16_t special; // 特殊
 } __attribute__((packed)) tx_desc_t;
 
+// 发送状态
+enum TS
+{
+    TS_DD = 1 << 0, // Descriptor Done
+    TS_EC = 1 << 1, // Excess Collisions
+    TS_LC = 1 << 2, // Late Collision
+    TS_TU = 1 << 3, // Transmit Underrun
+};
+
 #define RX_DESC_NR 32
+#define TX_DESC_NR 32
 
 struct e1000_device {
     char name[PCI_PRI_STR_SIZE + 1];
-
     int eeprom;
     void *hw_addr;
-    
     int uio_fd;
     int config_fd;
-    
-    uint8_t mac_addr[6];
-
     uint16_t rx_cur;
     uint16_t tx_cur;
-
     struct rx_desc_t *rx_desc;
-    struct rx_desc_t *tx_desc;
-
+    struct tx_desc_t *tx_desc;
+    uint8_t mac_addr[6];
 };
 
 int e1000_init(struct e1000_device *dev);
 struct e1000_device *e1000_device_get(const char *pci_id);
+int e1000_recv(struct e1000_device *dev, char *buf, size_t len);
+int e1000_send(struct e1000_device *dev, char *buf, size_t len);
 
 #endif
